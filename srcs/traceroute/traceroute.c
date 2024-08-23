@@ -70,7 +70,7 @@ void run_traceroute(const char *hostname)
     }
 
     struct timeval timeout;
-    timeout.tv_sec = 1;
+    timeout.tv_sec = 2;
     timeout.tv_usec = 0;
     if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0)
     {
@@ -91,6 +91,8 @@ void run_traceroute(const char *hostname)
         char hop_ip[INET_ADDRSTRLEN] = "";
         char hop_hostname[NI_MAXHOST] = "";
 
+        printf("%2d  ", ttl);
+
         for (int probe = 0; probe < 3; probe++)
         {
             struct icmp icmp_packet;
@@ -109,11 +111,11 @@ void run_traceroute(const char *hostname)
             if (sent_bytes <= 0)
             {
                 perror("sendto");
+                printf("*  ");
                 continue;
             }
 
             char recv_buffer[1500];
-
             ssize_t recv_bytes = recvfrom(sockfd, recv_buffer, sizeof(recv_buffer), 0, (struct sockaddr*)&recv_addr, &recv_addr_len);
             if (recv_bytes > 0)
             {
@@ -124,7 +126,7 @@ void run_traceroute(const char *hostname)
                 if (probe == 0)
                 {
                     resolve_hostname(hop_ip, hop_hostname, sizeof(hop_hostname));
-                    printf("%2d  %s (%s)  ", ttl, hop_hostname, hop_ip);
+                    printf("%s (%s)  ", hop_hostname, hop_ip);
                 }
 
                 printf("%.3f ms  ", rtt);
@@ -132,33 +134,17 @@ void run_traceroute(const char *hostname)
             }
             else
             {
-                if (probe == 0)
-                {
-                    printf("%2d  ", ttl);
-                }
                 printf("*  ");
             }
         }
 
         printf("\n");
 
-        if (received_responses > 0 && recv_addr.sin_addr.s_addr == dest.sin_addr.s_addr) {
+        if (received_responses > 0 && recv_addr.sin_addr.s_addr == dest.sin_addr.s_addr)
+        {
             break;
         }
     }
 
     close(sockfd);
-}
-
-int main(int argc, char *argv[])
-{
-    if (argc != 2)
-    {
-        fprintf(stderr, "Usage: %s <hostname>\n", argv[0]);
-        return 1;
-    }
-
-    run_traceroute(argv[1]);
-
-    return 0;
 }

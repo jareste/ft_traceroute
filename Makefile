@@ -9,11 +9,11 @@ RELEASE_CFLAGS = $(CFLAGS) -DNDEBUG
 #########
 
 #########
-FILES = traceroute
+FILES = main traceroute
 
 SRC = $(addsuffix .c, $(FILES))
 
-vpath %.c srcs
+vpath %.c srcs srcs/traceroute
 #########
 
 #########
@@ -25,7 +25,7 @@ DEP = $(addsuffix .d, $(basename $(OBJ)))
 #########
 $(OBJ_DIR)/%.o: %.c
 	@mkdir -p $(@D)
-	${CC} -MMD $(CFLAGS) -c -Iinc  $< -o $@
+	${CC} -MMD $(CFLAGS) -c -Iinc -Isrcs/traceroute $< -o $@
 
 all: 
 	$(MAKE) $(NAME)

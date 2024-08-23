@@ -38,7 +38,7 @@ void resolve_hostname(char *ip, char *hostname, size_t hostname_len)
     getnameinfo((struct sockaddr *)&sa, sizeof(sa), hostname, hostname_len, NULL, 0, 0);
 }
 
-void run_traceroute(const char *hostname, const char *interface, int max_hops)
+void run_traceroute(const char *hostname, const char *interface, int max_hops, int max_probes)
 {
     struct addrinfo hints, *res;
     struct sockaddr_in dest, recv_addr;
@@ -104,7 +104,7 @@ void run_traceroute(const char *hostname, const char *interface, int max_hops)
 
         printf("%2d  ", ttl);
 
-        for (int probe = 0; probe < 3; probe++)
+        for (int probe = 0; probe < max_probes; probe++)
         {
             struct icmp icmp_packet;
             memset(&icmp_packet, 0, sizeof(icmp_packet));

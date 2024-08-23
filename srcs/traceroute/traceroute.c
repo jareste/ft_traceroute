@@ -38,7 +38,7 @@ void resolve_hostname(char *ip, char *hostname, size_t hostname_len)
     getnameinfo((struct sockaddr *)&sa, sizeof(sa), hostname, hostname_len, NULL, 0, 0);
 }
 
-void run_traceroute(const char *hostname)
+void run_traceroute(const char *hostname, const char *interface, int max_hops)
 {
     struct addrinfo hints, *res;
     struct sockaddr_in dest, recv_addr;
@@ -60,7 +60,7 @@ void run_traceroute(const char *hostname)
 
     char ipstr[INET_ADDRSTRLEN];
     inet_ntop(AF_INET, &dest.sin_addr, ipstr, sizeof(ipstr));
-    printf("traceroute to %s (%s), 30 hops max\n", hostname, ipstr);
+    printf("traceroute to %s (%s), %d hops max\n", hostname, ipstr, max_hops);
 
     int sockfd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
     if (sockfd < 0)
@@ -79,7 +79,18 @@ void run_traceroute(const char *hostname)
         return;
     }
 
-    for (int ttl = 1; ttl <= 30; ttl++) {
+    if (interface != NULL)
+    {
+        // Bind the socket to the specified network interface
+        if (setsockopt(sockfd, SOL_SOCKET, SO_BINDTODEVICE, interface, strlen(interface)) < 0)
+        {
+            perror("setsockopt (SO_BINDTODEVICE)");
+            close(sockfd);
+            return;
+        }
+    }
+
+    for (int ttl = 1; ttl <= max_hops; ttl++) {
         if (setsockopt(sockfd, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl)) < 0)
         {
             perror("setsockopt TTL");

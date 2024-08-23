@@ -9,7 +9,10 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    run_traceroute(argv[1]);
+    char* interface = NULL;
+    int max_hops = 30;
+
+    run_traceroute(argv[1], interface, max_hops);
 
     return 0;
 }

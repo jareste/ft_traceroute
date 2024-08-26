@@ -94,14 +94,17 @@ int main(int argc, char **argv)
     }
 
     char* interface = NULL;
+    uint64_t first_hop = 1;
     int max_hops = 30;
-    int max_probes = 3;
+    int pph = 3;
     char *destination = NULL;
+    bool debug = false;
 
-    parse_argv(argc, argv, &interface, &max_hops, &max_probes, &destination);
+    parse_argv(argc, argv, &interface, &max_hops, &pph, &destination);
 
+    (void)interface;
 
-    run_traceroute(destination, interface, max_hops, max_probes);
+    traceroute(destination, first_hop, max_hops, pph, debug);
 
     return 0;
 }

@@ -1,6 +1,4 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include <traceroute.h>
 #include <sys/time.h>
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -9,153 +7,163 @@
 #include <unistd.h>
 #include <errno.h>
 #include <netdb.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
-unsigned short checksum(void *b, int len)
+int memdiff(void *a, void *b, size_t len)
 {
-    unsigned short *buf = b;
-    unsigned int sum = 0;
-    unsigned short result;
-
-    for (sum = 0; len > 1; len -= 2)
-    {
-        sum += *buf++;
-    }
-    if (len == 1)
-    {
-        sum += *(unsigned char*)buf;
-    }
-    sum = (sum >> 16) + (sum & 0xFFFF);
-    sum += (sum >> 16);
-    result = ~sum;
-    return result;
+	return memcmp(a, b, len) != 0;
 }
 
-void resolve_hostname(char *ip, char *hostname, size_t hostname_len)
+unsigned short checksum(void *buf, size_t len)
 {
-    struct sockaddr_in sa;
-    sa.sin_family = AF_INET;
-    inet_pton(AF_INET, ip, &sa.sin_addr);
-    getnameinfo((struct sockaddr *)&sa, sizeof(sa), hostname, hostname_len, NULL, 0, 0);
+    unsigned short* addr = (unsigned short*)buf;
+	unsigned long sum = 0;
+	for (; len > sizeof(char); len -= sizeof(short))
+		sum += *addr++;
+	if (len == sizeof(char))
+		sum += *(unsigned char *)addr;
+	unsigned char bits = sizeof(short) * 8;
+	while (sum >> bits)
+		sum = (sum & ((1 << bits) - 1)) + (sum >> bits);
+	return (~sum);
 }
 
-void run_traceroute(const char *hostname, const char *interface, int max_hops, int max_probes)
+void	craft_traceroute_packet(struct icmphdr *buf)
 {
-    struct addrinfo hints, *res;
-    struct sockaddr_in dest, recv_addr;
-    socklen_t recv_addr_len = sizeof(recv_addr);
+	buf->type = ICMP_ECHO;
+	buf->code = 0;
+	buf->checksum = 0;
+	buf->un.echo.id = SWAP_ENDIANESS_16(getpid());
+	buf->un.echo.sequence = SWAP_ENDIANESS_16(1);
 
-    memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_RAW;
-
-    int err = getaddrinfo(hostname, NULL, &hints, &res);
-    if (err != 0)
+	for (uint64_t i = 0; i < PCK_DATA_SIZE; ++i)
     {
-        fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(err));
-        return;
-    }
+		((char *)buf)[sizeof(struct icmphdr) + i] = i % 3 + 1;
+	}
 
-    memcpy(&dest, res->ai_addr, sizeof(dest));
-    freeaddrinfo(res);
+	buf->checksum = checksum(buf, PCK_SIZE);
+}
 
-    char ipstr[INET_ADDRSTRLEN];
-    inet_ntop(AF_INET, &dest.sin_addr, ipstr, sizeof(ipstr));
-    printf("traceroute to %s (%s), %d hops max\n", hostname, ipstr, max_hops);
+void traceroute(char* host, uint64_t first_hop, uint64_t max_hops, uint64_t probes_per_hop, bool debug)
+{
+	struct addrinfo	*addr;
 
-    int sockfd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
-    if (sockfd < 0)
+	struct addrinfo hints = {0};
+	hints.ai_family = AF_INET;
+	hints.ai_socktype = SOCK_RAW;
+	hints.ai_protocol = IPPROTO_ICMP;
+
+	if (getaddrinfo(host, NULL, &hints, &addr) < 0)
     {
-        perror("socket");
-        return;
-    }
+		fprintf(stderr, "traceroute: cannot resolve %s: Unknown host\n", host);
+		exit(1);
+	}
 
-    struct timeval timeout;
-    timeout.tv_sec = 2;
-    timeout.tv_usec = 0;
-    if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0)
+	int	sock = socket(addr->ai_family, SOCK_RAW, IPPROTO_ICMP);
+	if (sock < 0)
     {
-        perror("setsockopt timeout");
-        close(sockfd);
-        return;
-    }
+		perror("traceroute: could not create socket");
+		exit(1);
+	}
 
-    if (interface != NULL)
+	struct timeval timeout = {1, 0};
+	if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0)
     {
-        // Bind the socket to the specified network interface
-        if (setsockopt(sockfd, SOL_SOCKET, SO_BINDTODEVICE, interface, strlen(interface)) < 0)
+		perror("traceroute: setsockopt SO_RCVTIMEO");
+		exit(1);
+	}
+
+	if (debug)
+    {
+		if (setsockopt(sock, SOL_SOCKET, SO_DEBUG, &debug, sizeof(debug)) < 0)
         {
-            perror("setsockopt (SO_BINDTODEVICE)");
-            close(sockfd);
-            return;
-        }
-    }
+			perror("traceroute: setsockopt SO_DEBUG");
+			exit(1);
+		}
+	}
 
-    for (int ttl = 1; ttl <= max_hops; ttl++) {
-        if (setsockopt(sockfd, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl)) < 0)
+	uint64_t	hops = first_hop;
+
+	char	hostip_s[INET6_ADDRSTRLEN];
+	inet_ntop(addr->ai_family, &((struct sockaddr_in *)addr->ai_addr)->sin_addr, hostip_s, INET6_ADDRSTRLEN);
+
+	printf("traceroute to %s (%s), %ld hops max, %ld byte packets\n",
+		host, hostip_s,
+		max_hops, PCK_SIZE + sizeof(struct ip));
+
+	/** Exec */
+
+	while (hops <= max_hops)
+    {
+		if (setsockopt(sock, IPPROTO_IP, IP_TTL, &hops, sizeof(hops)) < 0)
         {
-            perror("setsockopt TTL");
-            close(sockfd);
-            return;
-        }
+			perror("traceroute: setsockopt IP_TTL");
+			exit(1);
+		}
 
-        int received_responses = 0;
-        char hop_ip[INET_ADDRSTRLEN] = "";
-        char hop_hostname[NI_MAXHOST] = "";
+		printf("%2ld", hops);
+		int	reached = 1;
+		struct sockaddr_in	prev_addr = {};
 
-        printf("%2d  ", ttl);
-
-        for (int probe = 0; probe < max_probes; probe++)
+		for (uint64_t i = 0; i < probes_per_hop; ++i)
         {
-            struct icmp icmp_packet;
-            memset(&icmp_packet, 0, sizeof(icmp_packet));
-            icmp_packet.icmp_type = ICMP_ECHO;
-            icmp_packet.icmp_code = 0;
-            icmp_packet.icmp_cksum = 0;
-            icmp_packet.icmp_id = getpid();
-            icmp_packet.icmp_seq = ttl * 3 + probe;
-            icmp_packet.icmp_cksum = checksum(&icmp_packet, sizeof(icmp_packet));
+			char	buf[PCK_SIZE];
+			craft_traceroute_packet((struct icmphdr *)buf);
 
-            struct timeval start, end;
+			struct timeval	start;
             gettimeofday(&start, NULL);
 
-            ssize_t sent_bytes = sendto(sockfd, &icmp_packet, sizeof(icmp_packet), 0, (struct sockaddr*)&dest, sizeof(dest));
-            if (sent_bytes <= 0)
+			if (sendto(sock, buf, PCK_SIZE, 0, addr->ai_addr, addr->ai_addrlen) < 0)
             {
-                perror("sendto");
-                printf("*  ");
-                continue;
-            }
+				perror("traceroute: sendto");
+				exit(1);
+			}
 
-            char recv_buffer[1500];
-            ssize_t recv_bytes = recvfrom(sockfd, recv_buffer, sizeof(recv_buffer), 0, (struct sockaddr*)&recv_addr, &recv_addr_len);
-            if (recv_bytes > 0)
+			char				recvbuf[RECV_BUFSIZE];
+			struct sockaddr_in	r_addr;
+			uint				addr_len = sizeof(r_addr);
+
+			if (recvfrom(sock, &recvbuf, RECV_BUFSIZE, 0, (struct sockaddr*)&r_addr, &addr_len) < 0)
             {
-                gettimeofday(&end, NULL);
-                double rtt = (end.tv_sec - start.tv_sec) * 1000.0 + (end.tv_usec - start.tv_usec) / 1000.0;
+				printf("  *");
+				reached = 0;
+				continue ;
+			}
 
-                inet_ntop(AF_INET, &recv_addr.sin_addr, hop_ip, sizeof(hop_ip));
-                if (probe == 0)
-                {
-                    resolve_hostname(hop_ip, hop_hostname, sizeof(hop_hostname));
-                    printf("%s (%s)  ", hop_hostname, hop_ip);
-                }
+			struct timeval end;
+            gettimeofday(&end, NULL);
+            
+			double	time = (double)(end.tv_sec - start.tv_sec) * 1000 + (double)(end.tv_usec - start.tv_usec) / 1000;
 
-                printf("%.3f ms  ", rtt);
-                received_responses++;
-            }
-            else
+			char	ipbuf[INET6_ADDRSTRLEN];
+			inet_ntop(r_addr.sin_family, &r_addr.sin_addr, ipbuf, sizeof(ipbuf));
+
+			if (i == 0 || memdiff(&prev_addr, &r_addr, sizeof(r_addr)))
             {
-                printf("*  ");
-            }
-        }
+				printf("  %s", ipbuf);
+			}
+			printf("  %.3f ms", time);
 
-        printf("\n");
+			prev_addr = r_addr;
 
-        if (received_responses > 0 && recv_addr.sin_addr.s_addr == dest.sin_addr.s_addr)
+			struct icmphdr	*icmp_res = (void *)recvbuf + sizeof(struct ip);
+
+			if (icmp_res->type == ICMP_TIME_EXCEEDED)
+            {
+				reached = 0;
+			}
+		}
+
+		printf("\n");
+
+		if (reached)
         {
-            break;
-        }
-    }
+			break ;
+		}
 
-    close(sockfd);
+		++hops;
+	}
+
 }
